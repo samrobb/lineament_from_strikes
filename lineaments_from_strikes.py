@@ -549,6 +549,8 @@ def main():
     ap.add_argument("--cell_size", type=float, default=200.0, help="Spatial hash cell size (map units)")
     ap.add_argument("--out_points", default="lineaments_points.csv", help="Output points CSV")
     ap.add_argument("--out_segments", default="lineaments_segments.csv", help="Output segments CSV")
+    ap.add_argument("--require_reciprocal", action="store_true",
+                    help="Require reciprocal best-match when linking points between lines")
     args = ap.parse_args()
 
     pts = read_points_flexible(args.input_path, args)
