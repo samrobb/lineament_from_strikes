@@ -160,22 +160,49 @@ def parse_line_number(s: str) -> int:
     raise ValueError(f"Could not parse LineNumber from: {s!r}")
 
 
-def read_points(csv_path: str) -> List[Point]:
+def read_points_flexible(path: str, args) -> List[Point]:
     points: List[Point] = []
-    with open(csv_path, "r", newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        required = {"LineNumber", "Easting", "Northing", "Strike"}
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"Missing required columns: {sorted(missing)}")
 
-        for i, row in enumerate(reader):
-            line = parse_line_number(row["LineNumber"])
-            e = float(row["Easting"])
-            n = float(row["Northing"])
-            strike = normalize_axis_deg(float(row["Strike"]))
-            points.append(Point(idx=i, line=line, e=e, n=n, strike=strike))
+    # delimiter handling
+    if args.delimiter.lower() == "space":
+        delimiter = None  # split on whitespace
+    else:
+        delimiter = args.delimiter
+
+    with open(path, "r", encoding="utf-8-sig") as f:
+        if args.no_header:
+            # Headerless (XYZ-style)
+            if None in (args.idx_easting, args.idx_northing,
+                        args.idx_strike, args.idx_line):
+                raise ValueError("Headerless file requires --idx_* arguments")
+
+            for i, line in enumerate(f):
+                if not line.strip():
+                    continue
+                parts = line.split() if delimiter is None else line.split(delimiter)
+
+                e = float(parts[args.idx_easting])
+                n = float(parts[args.idx_northing])
+                strike = normalize_axis_deg(float(parts[args.idx_strike]))
+                line_num = parse_line_number(parts[args.idx_line])
+
+                points.append(Point(i, line_num, e, n, strike))
+
+        else:
+            # Header-based (CSV or delimited text)
+            import csv
+            reader = csv.DictReader(f, delimiter=delimiter)
+
+            for i, row in enumerate(reader):
+                e = float(row[args.col_easting])
+                n = float(row[args.col_northing])
+                strike = normalize_axis_deg(float(row[args.col_strike]))
+                line_num = parse_line_number(row[args.col_line])
+
+                points.append(Point(i, line_num, e, n, strike))
+
     return points
+
 
 
 def build_spatial_hash(points: List[Point], cell_size: float) -> Dict[Tuple[int, int], List[int]]:
@@ -494,8 +521,29 @@ def write_outputs(points: List[Point],
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Build lineaments by linking strike-consistent points on neighbouring lines.")
-    ap.add_argument("csv_path", help="Input CSV with LineNumber,Easting,Northing,Strike")
-    ap.add_argument("--strike_tol_deg", type=float, default=10.0, help="Strike vs vector axis tolerance (degrees)")
+    ap.add_argument("input_path", help="Input CSV or XYZ file")
+
+    # File formats
+    ap.add_argument("--delimiter", default=",",
+                    help="Field delimiter (',' for CSV, ' ' for XYZ). Use 'space' for whitespace.")
+    ap.add_argument("--no_header", action="store_true",
+                    help="Set if the file has no header row")
+
+    # Column headers
+    ap.add_argument("--col_easting", default="Easting")
+    ap.add_argument("--col_northing", default="Northing")
+    ap.add_argument("--col_strike", default="Strike")
+    ap.add_argument("--col_line", default="LineNumber")
+
+    # Column indicies (for XYZ)
+    ap.add_argument("--idx_easting", type=int)
+    ap.add_argument("--idx_northing", type=int)
+    ap.add_argument("--idx_strike", type=int)
+    ap.add_argument("--idx_line", type=int)
+
+    # Linenament parameters
+    ap.add_argument("--cone_half_angle", type=float, default=10.0)
+    ap.add_argument("--strike_match_tol", type=float, default=10.0)
     ap.add_argument("--max_link_distance", type=float, default=200.0, help="Max distance to link points (map units)")
     ap.add_argument("--min_points", type=int, default=5, help="Minimum points for saving a lineament (>= this)")
     ap.add_argument("--cell_size", type=float, default=200.0, help="Spatial hash cell size (map units)")
@@ -503,16 +551,17 @@ def main():
     ap.add_argument("--out_segments", default="lineaments_segments.csv", help="Output segments CSV")
     args = ap.parse_args()
 
-    pts = read_points(args.csv_path)
+    pts = read_points_flexible(args.input_path, args)
     comps, eds = build_lineaments(
         pts,
-        cone_half_angle_deg=args.strike_tol_deg,      # reuse your existing flag if you want
-        strike_match_tol_deg=args.strike_tol_deg,     # or add a separate flag
+        cone_half_angle_deg=args.cone_half_angle,
+        strike_match_tol_deg=args.strike_match_tol,
         max_link_distance=args.max_link_distance,
         min_points=args.min_points,
         cell_size=args.cell_size,
-        require_reciprocal=True,
+        require_reciprocal=args.require_reciprocal
     )
+
     print("Lineaments found:", len(comps))
     print("Edges kept:", len(eds))
     write_outputs(pts, comps, eds, args.out_points, args.out_segments, "lineaments_summary.csv")
